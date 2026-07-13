@@ -1,5 +1,5 @@
 // 歌練習ノート service worker
-const CACHE = "utareno-v1";
+const CACHE = "utareno-v2";
 const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", e => {
