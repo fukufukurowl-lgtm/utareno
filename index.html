@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>歌練習ノート</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#faf7f1">
+<style>
+:root{
+  --bg:#faf7f1; --card:#ffffff; --ink:#33302b; --sub:#8a8377;
+  --accent:#e0562e; --accent-soft:#fbe9e2; --line:#e8e2d8;
+  --note:#c94f28;
+  --safe-b:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:"Hiragino Sans","Yu Gothic","Noto Sans JP",sans-serif;font-size:16px;}
+button{font-family:inherit;border:none;background:none;cursor:pointer;color:inherit;}
+input,textarea{font-family:inherit;font-size:16px;color:var(--ink);}
+.hidden{display:none!important;}
+
+/* ===== ヘッダー ===== */
+header{position:sticky;top:0;z-index:20;background:rgba(250,247,241,.92);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:8px;padding:10px 12px;min-height:52px;}
+header h1{font-size:17px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+header .sub{font-size:12px;color:var(--sub);font-weight:normal;margin-left:6px;}
+.iconbtn{width:40px;height:40px;border-radius:12px;font-size:20px;display:flex;
+  align-items:center;justify-content:center;flex:none;}
+.iconbtn:active{background:var(--accent-soft);}
+.pillbtn{padding:8px 14px;border-radius:20px;font-size:14px;font-weight:600;flex:none;}
+.pillbtn.on{background:var(--accent);color:#fff;}
+.pillbtn.off{background:#eee7dc;color:var(--ink);}
+
+/* ===== 曲一覧 ===== */
+#homeView{padding:14px 14px calc(90px + var(--safe-b));}
+.songcard{background:var(--card);border:1px solid var(--line);border-radius:16px;
+  padding:14px 16px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.04);}
+.songcard:active{transform:scale(.985);}
+.songcard .t{font-size:17px;font-weight:700;}
+.songcard .a{font-size:13px;color:var(--sub);margin-top:2px;}
+.songcard .d{font-size:11px;color:var(--sub);margin-top:6px;}
+#emptyMsg{text-align:center;color:var(--sub);padding:60px 20px;line-height:1.9;font-size:14px;}
+#fab{position:fixed;right:18px;bottom:calc(18px + var(--safe-b));width:58px;height:58px;
+  border-radius:50%;background:var(--accent);color:#fff;font-size:30px;z-index:15;
+  box-shadow:0 4px 14px rgba(224,86,46,.4);display:flex;align-items:center;justify-content:center;}
+
+/* ===== 歌詞ビュー ===== */
+#songView{padding:16px 16px calc(140px + var(--safe-b));}
+.lyricline{display:flex;flex-wrap:wrap;align-items:flex-end;row-gap:4px;margin-bottom:14px;}
+.lyricline.blank{height:14px;margin-bottom:0;}
+.seg{display:inline-flex;flex-direction:column;align-items:flex-start;max-width:100%;margin-right:1px;}
+.seg-text{font-size:19px;line-height:1.55;padding:1px 3px;border-radius:5px;white-space:pre-wrap;word-break:break-word;}
+.seg-note{font-size:14px;line-height:1.5;color:var(--note);padding:1px 3px 0;max-width:100%;
+  word-break:break-word;white-space:pre-wrap;}
+/* 編集モード(デフォルト) */
+body.editing .seg-text{outline:1.5px dashed #d5cbb9;outline-offset:1px;}
+body.editing .seg{margin-right:5px;margin-bottom:3px;}
+.seg.selected .seg-text{outline:2px solid var(--accent)!important;outline-offset:1px;}
+/* なぞり選択 */
+body.editing #songView{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;}
+body.editing .seg-text{touch-action:pan-y;}
+.chr.selch{background:rgba(224,86,46,.32);border-radius:3px;}
+
+/* ===== 凡例バー ===== */
+#legendBar{display:flex;flex-wrap:wrap;gap:6px 10px;padding:10px 16px;border-bottom:1px dashed var(--line);
+  font-size:12px;color:var(--sub);}
+#legendBar .lg{display:flex;align-items:center;gap:4px;}
+#legendBar .sw{width:14px;height:14px;border-radius:4px;border:1px solid rgba(0,0,0,.08);}
+
+/* ===== ボトムシート(フレーズ編集) ===== */
+#sheet{position:fixed;left:0;right:0;bottom:0;z-index:30;background:#fff;
+  border-radius:20px 20px 0 0;box-shadow:0 -6px 30px rgba(0,0,0,.15);
+  padding:14px 16px calc(14px + var(--safe-b));max-height:70vh;overflow-y:auto;}
+#sheet h3{margin:0 0 10px;font-size:13px;color:var(--sub);font-weight:600;}
+.sheet-label{font-size:12px;color:var(--sub);margin:12px 0 6px;font-weight:600;}
+.palette{display:flex;gap:10px;flex-wrap:wrap;}
+.palette .pal{width:38px;height:38px;border-radius:12px;border:2px solid rgba(0,0,0,.06);
+  display:flex;align-items:center;justify-content:center;font-size:16px;}
+.palette .pal.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft);}
+#cmtInput{width:100%;border:1.5px solid var(--line);border-radius:12px;padding:10px 12px;
+  min-height:64px;resize:vertical;background:#fffdf8;}
+#cmtInput:focus{outline:none;border-color:var(--accent);}
+.sheetbtns{display:flex;gap:8px;margin-top:14px;}
+.sheetbtns button{flex:1;padding:12px 0;border-radius:12px;font-size:14px;font-weight:600;}
+.btn-merge{background:#f0ebe2;}
+.btn-done{background:var(--accent);color:#fff;}
+
+/* ===== モーダル共通 ===== */
+.modal{position:fixed;inset:0;z-index:40;background:rgba(40,35,28,.45);
+  display:flex;align-items:flex-end;justify-content:center;}
+.modal .panel{background:#fff;width:100%;max-width:560px;max-height:92vh;overflow-y:auto;
+  border-radius:20px 20px 0 0;padding:18px 18px calc(18px + var(--safe-b));}
+.panel h2{margin:0 0 14px;font-size:18px;}
+.field{margin-bottom:12px;}
+.field label{display:block;font-size:12px;color:var(--sub);margin-bottom:4px;font-weight:600;}
+.field input[type=text],.field textarea{width:100%;border:1.5px solid var(--line);border-radius:12px;
+  padding:10px 12px;background:#fffdf8;}
+.field input:focus,.field textarea:focus{outline:none;border-color:var(--accent);}
+#lyricsInput{min-height:180px;resize:vertical;line-height:1.7;}
+.rowbtns{display:flex;gap:8px;margin-top:14px;}
+.rowbtns button{flex:1;padding:13px 0;border-radius:12px;font-size:15px;font-weight:600;}
+.btn-pri{background:var(--accent);color:#fff;}
+.btn-sec{background:#f0ebe2;}
+.btn-danger{background:#fdeceb;color:#c0392b;}
+#searchResults{margin-top:10px;}
+.result{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;background:#fffdf8;}
+.result:active{background:var(--accent-soft);}
+.result .rt{font-weight:700;font-size:14px;}
+.result .ra{font-size:12px;color:var(--sub);}
+.searchstatus{font-size:13px;color:var(--sub);padding:8px 2px;}
+/* メニューシート */
+.menu-item{display:block;width:100%;text-align:left;padding:15px 6px;font-size:16px;
+  border-bottom:1px solid var(--line);}
+.menu-item:last-child{border-bottom:none;}
+.menu-item.danger{color:#c0392b;}
+/* 凡例編集 */
+.legend-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+.legend-row .sw{width:34px;height:34px;border-radius:10px;flex:none;border:1px solid rgba(0,0,0,.08);}
+.legend-row input{flex:1;border:1.5px solid var(--line);border-radius:10px;padding:8px 10px;background:#fffdf8;}
+/* トースト */
+#toast{position:fixed;left:50%;bottom:calc(100px + var(--safe-b));transform:translateX(-50%);
+  background:rgba(40,35,28,.9);color:#fff;padding:10px 18px;border-radius:20px;font-size:14px;
+  z-index:60;pointer-events:none;opacity:0;transition:opacity .25s;white-space:nowrap;}
+#toast.show{opacity:1;}
+</style>
+</head>
+<body>
+
+<!-- ============ ホーム(曲一覧) ============ -->
+<div id="homeScreen">
+  <header>
+    <h1>🎤 歌練習ノート</h1>
+    <button class="iconbtn" id="homeMenuBtn">⋯</button>
+  </header>
+  <div id="homeView"></div>
+  <button id="fab">＋</button>
+</div>
+
+<!-- ============ 曲画面 ============ -->
+<div id="songScreen" class="hidden">
+  <header>
+    <button class="iconbtn" id="backBtn">‹</button>
+    <h1 id="songTitle"></h1>
+    <button class="pillbtn off" id="editToggle">編集</button>
+    <button class="iconbtn" id="songMenuBtn">⋯</button>
+  </header>
+  <div id="legendBar"></div>
+  <div id="songView"></div>
+</div>
+
+<!-- ============ フレーズ編集シート ============ -->
+<div id="sheet" class="hidden">
+  <h3>フレーズを編集</h3>
+  <div class="sheet-label">マーカー色</div>
+  <div class="palette" id="palette"></div>
+  <div class="sheet-label">コメント(歌い方・発音・ニュアンス)</div>
+  <textarea id="cmtInput" placeholder="例: ここは息多めでささやくように"></textarea>
+  <div class="sheetbtns">
+    <button class="btn-merge" id="mergeL">⇤ 前と結合</button>
+    <button class="btn-merge" id="mergeR">次と結合 ⇥</button>
+    <button class="btn-done" id="sheetDone">完了</button>
+  </div>
+</div>
+
+<!-- ============ 曲追加/編集モーダル ============ -->
+<div id="addModal" class="modal hidden">
+  <div class="panel">
+    <h2 id="addTitle">曲を追加</h2>
+    <div class="field"><label>曲名</label><input type="text" id="inTitle" placeholder="曲名"></div>
+    <div class="field"><label>アーティスト(任意)</label><input type="text" id="inArtist" placeholder="アーティスト名"></div>
+    <div class="rowbtns" id="fetchRow">
+      <button class="btn-sec" id="btnSearch">🔍 歌詞を自動検索</button>
+      <button class="btn-sec" id="btnOpenSite">🌐 歌詞サイトで探す</button>
+    </div>
+    <div id="searchResults"></div>
+    <div class="field" style="margin-top:12px"><label>歌詞</label>
+      <textarea id="lyricsInput" placeholder="ここに歌詞が入ります(手でペーストしてもOK)"></textarea>
+    </div>
+    <div class="rowbtns">
+      <button class="btn-sec" id="addCancel">キャンセル</button>
+      <button class="btn-pri" id="addSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ メニューモーダル(ホーム) ============ -->
+<div id="homeMenu" class="modal hidden">
+  <div class="panel">
+    <h2>メニュー</h2>
+    <button class="menu-item" id="miQR">📱 スマホで開く(QRコード)</button>
+    <button class="menu-item" id="miLegend">🎨 マーカー色の意味を編集</button>
+    <button class="menu-item" id="miExport">💾 バックアップを書き出す</button>
+    <button class="menu-item" id="miImport">📂 バックアップを読み込む</button>
+    <button class="menu-item" id="homeMenuClose">閉じる</button>
+    <input type="file" id="importFile" accept=".json" class="hidden">
+  </div>
+</div>
+
+<!-- ============ メニューモーダル(曲) ============ -->
+<div id="songMenu" class="modal hidden">
+  <div class="panel">
+    <h2 id="songMenuTitle"></h2>
+    <button class="menu-item" id="miEditInfo">✏️ 曲名・アーティストを変更</button>
+    <button class="menu-item" id="miEditLyrics">📝 歌詞を編集し直す(区切り・コメントはリセット)</button>
+    <button class="menu-item danger" id="miDeleteSong">🗑 この曲を削除</button>
+    <button class="menu-item" id="songMenuClose">閉じる</button>
+  </div>
+</div>
+
+<!-- ============ 凡例編集モーダル ============ -->
+<div id="legendModal" class="modal hidden">
+  <div class="panel">
+    <h2>マーカー色の意味</h2>
+    <div id="legendEdit"></div>
+    <div class="rowbtns">
+      <button class="btn-sec" id="legendCancel">キャンセル</button>
+      <button class="btn-pri" id="legendSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ QRモーダル ============ -->
+<div id="qrModal" class="modal hidden">
+  <div class="panel">
+    <h2>📱 スマホで開く</h2>
+    <div id="qrBody" style="text-align:center;padding:10px 0;">読み込み中…</div>
+    <div style="font-size:13px;color:var(--sub);line-height:1.8;">
+      1. iPhoneをこのPCと<b>同じWi-Fi</b>につなぐ<br>
+      2. カメラでQRを読み取ってSafariで開く<br>
+      3. 共有ボタン→<b>「ホーム画面に追加」</b>でアプリ化<br>
+      ※PCでこのサーバが起動している間だけ開けます
+    </div>
+    <div class="rowbtns"><button class="btn-sec" id="qrClose">閉じる</button></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+/* ================= 定数 ================= */
+const COLORS = [
+  {id:"yellow", css:"#ffe98a"},
+  {id:"pink",   css:"#ffd0dc"},
+  {id:"blue",   css:"#c5e3ff"},
+  {id:"green",  css:"#c9f2c9"},
+  {id:"orange", css:"#ffd9ad"},
+  {id:"purple", css:"#e2d4ff"},
+];
+const DEFAULT_LEGEND = {yellow:"要練習", pink:"強く・感情", blue:"やさしく・ささやき", green:"", orange:"", purple:""};
+const cssOf = id => (COLORS.find(c=>c.id===id)||{}).css || "transparent";
+
+/* ================= IndexedDB ================= */
+let db;
+function openDB(){
+  return new Promise((res,rej)=>{
+    const rq = indexedDB.open("utareno", 1);
+    rq.onupgradeneeded = e=>{
+      const d = e.target.result;
+      d.createObjectStore("songs", {keyPath:"id"});
+      d.createObjectStore("meta", {keyPath:"key"});
+    };
+    rq.onsuccess = e=>{db=e.target.result; res();};
+    rq.onerror = ()=>rej(rq.error);
+  });
+}
+const tx = (store,mode)=>db.transaction(store,mode).objectStore(store);
+const idbAll = s=>new Promise((res,rej)=>{const r=tx(s,"readonly").getAll(); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);});
+const idbPut = (s,v)=>new Promise((res,rej)=>{const r=tx(s,"readwrite").put(v); r.onsuccess=res; r.onerror=()=>rej(r.error);});
+const idbDel = (s,k)=>new Promise((res,rej)=>{const r=tx(s,"readwrite").delete(k); r.onsuccess=res; r.onerror=()=>rej(r.error);});
+const idbGet = (s,k)=>new Promise((res,rej)=>{const r=tx(s,"readonly").get(k); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);});
+
+/* ================= 状態 ================= */
+let songs = [];          // 一覧キャッシュ
+let cur = null;          // 現在の曲オブジェクト
+let editMode = false;
+let sel = null;          // {li, si} 選択中フレーズ
+let legend = {...DEFAULT_LEGEND};
+let addModalMode = "new"; // new | relyrics | info
+const $ = id => document.getElementById(id);
+
+/* ================= ユーティリティ ================= */
+const uid = ()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+function toast(msg){
+  const t=$("toast"); t.textContent=msg; t.classList.add("show");
+  clearTimeout(t._tm); t._tm=setTimeout(()=>t.classList.remove("show"),1800);
+}
+function fmtDate(ts){
+  const d=new Date(ts);
+  return `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()}`;
+}
+function lyricsToLines(text){
+  return text.replace(/\r/g,"").split("\n").map(l=>{
+    const t=l.trim();
+    return t==="" ? {blank:true, segments:[]} : {blank:false, segments:[{text:l, color:null, comment:""}]};
+  });
+}
+async function saveCur(){
+  if(!cur) return;
+  cur.updatedAt = Date.now();
+  await idbPut("songs", cur);
+  const i = songs.findIndex(s=>s.id===cur.id);
+  if(i>=0) songs[i]=cur; else songs.push(cur);
+}
+
+/* ================= ホーム描画 ================= */
+function renderHome(){
+  const v = $("homeView");
+  v.innerHTML = "";
+  const sorted = [...songs].sort((a,b)=>b.updatedAt-a.updatedAt);
+  if(sorted.length===0){
+    v.innerHTML = `<div id="emptyMsg">まだ曲がありません。<br>右下の＋ボタンから最初の曲を追加してね 🎵</div>`;
+    return;
+  }
+  for(const s of sorted){
+    const c = document.createElement("div");
+    c.className="songcard";
+    c.innerHTML = `<div class="t"></div><div class="a"></div><div class="d"></div>`;
+    c.querySelector(".t").textContent = s.title;
+    c.querySelector(".a").textContent = s.artist || "";
+    c.querySelector(".d").textContent = "更新: " + fmtDate(s.updatedAt);
+    c.onclick = ()=>openSong(s.id);
+    v.appendChild(c);
+  }
+}
+
+/* ================= 曲画面 ================= */
+function openSong(id){
+  cur = songs.find(s=>s.id===id);
+  if(!cur) return;
+  editMode = true; sel = null;
+  $("homeScreen").classList.add("hidden");
+  $("songScreen").classList.remove("hidden");
+  $("songTitle").textContent = cur.title;
+  updateEditToggle();
+  renderLegendBar();
+  renderLyrics();
+  window.scrollTo(0,0);
+}
+function closeSong(){
+  hideSheet();
+  cur = null;
+  $("songScreen").classList.add("hidden");
+  $("homeScreen").classList.remove("hidden");
+  renderHome();
+}
+function updateEditToggle(){
+  const b=$("editToggle");
+  // ボタンは「押すと切り替わる先」を表示
+  b.textContent = editMode ? "👁 ビュー" : "✏️ 編集";
+  b.className = "pillbtn " + (editMode?"off":"on");
+  document.body.classList.toggle("editing", editMode);
+}
+function renderLegendBar(){
+  const bar=$("legendBar"); bar.innerHTML="";
+  let any=false;
+  for(const c of COLORS){
+    const label = legend[c.id];
+    if(!label) continue;
+    any=true;
+    const el=document.createElement("span");
+    el.className="lg";
+    el.innerHTML=`<span class="sw" style="background:${c.css}"></span><span></span>`;
+    el.querySelector("span:last-child").textContent=label;
+    bar.appendChild(el);
+  }
+  bar.style.display = any ? "flex" : "none";
+}
+function renderLyrics(){
+  const v=$("songView"); v.innerHTML="";
+  cur.lines.forEach((line,li)=>{
+    const ld=document.createElement("div");
+    ld.className="lyricline"+(line.blank?" blank":"");
+    let gpos=0;
+    line.segments.forEach((seg,si)=>{
+      const sd=document.createElement("div");
+      sd.className="seg";
+      if(sel && sel.li===li && sel.si===si) sd.classList.add("selected");
+      const t=document.createElement("span");
+      t.className="seg-text";
+      if(editMode){
+        for(const ch of [...seg.text]){
+          const cs=document.createElement("span");
+          cs.className="chr"; cs.textContent=ch;
+          cs.dataset.li=li; cs.dataset.gi=gpos++;
+          t.appendChild(cs);
+        }
+      }else{
+        t.textContent=seg.text;
+      }
+      if(seg.color) t.style.background=cssOf(seg.color);
+      sd.appendChild(t);
+      if(seg.comment){
+        const n=document.createElement("span");
+        n.className="seg-note"; n.textContent=seg.comment;
+        sd.appendChild(n);
+      }
+      if(editMode){
+        sd.onclick=()=>{ if(dragDidSelect){dragDidSelect=false;return;} selectSeg(li,si); };
+      }
+      ld.appendChild(sd);
+    });
+    v.appendChild(ld);
+  });
+}
+
+/* ================= フレーズ編集シート ================= */
+function selectSeg(li,si){
+  // 開いているシートのコメントを先に確定
+  if(sel) commitComment();
+  sel={li,si};
+  renderLyrics();
+  showSheet();
+}
+function curSeg(){ return sel ? cur.lines[sel.li].segments[sel.si] : null; }
+function showSheet(){
+  const seg=curSeg(); if(!seg) return;
+  $("sheet").classList.remove("hidden");
+  // パレット
+  const pal=$("palette"); pal.innerHTML="";
+  const none=document.createElement("button");
+  none.className="pal"+(seg.color?"":" sel");
+  none.style.background="#fff"; none.textContent="✕";
+  none.onclick=()=>setColor(null);
+  pal.appendChild(none);
+  for(const c of COLORS){
+    const b=document.createElement("button");
+    b.className="pal"+(seg.color===c.id?" sel":"");
+    b.style.background=c.css;
+    b.title=legend[c.id]||"";
+    b.onclick=()=>setColor(c.id);
+    pal.appendChild(b);
+  }
+  $("cmtInput").value=seg.comment||"";
+  $("mergeL").disabled = sel.si===0;
+  $("mergeR").disabled = sel.si===cur.lines[sel.li].segments.length-1;
+  $("mergeL").style.opacity = $("mergeL").disabled?".4":"1";
+  $("mergeR").style.opacity = $("mergeR").disabled?".4":"1";
+}
+function hideSheet(){
+  if(sel) commitComment();
+  sel=null;
+  $("sheet").classList.add("hidden");
+  if(cur) renderLyrics();
+}
+function commitComment(){
+  const seg=curSeg(); if(!seg) return;
+  const v=$("cmtInput").value.trim();
+  if(v!==seg.comment){ seg.comment=v; saveCur(); }
+}
+/* ===== なぞり(ドラッグ)で範囲選択 ===== */
+let drag=null;           // {li, a, x, y, active, b}
+let dragDidSelect=false; // 選択直後のクリック(タップ扱い)を無視するフラグ
+
+function highlightRange(li,a,b){
+  const [s,e]=a<=b?[a,b]:[b,a];
+  document.querySelectorAll("#songView .chr").forEach(c=>{
+    const hit = +c.dataset.li===li && +c.dataset.gi>=s && +c.dataset.gi<=e;
+    c.classList.toggle("selch", hit);
+  });
+}
+function chrFromPoint(x,y){
+  const el=document.elementFromPoint(x,y);
+  return el && el.classList && el.classList.contains("chr") ? el : null;
+}
+function initDragSelect(){
+  const v=$("songView");
+  v.addEventListener("pointerdown",e=>{
+    if(!editMode) return;
+    const c=e.target.closest && e.target.closest(".chr");
+    if(!c) return;
+    drag={li:+c.dataset.li, a:+c.dataset.gi, b:+c.dataset.gi, x:e.clientX, y:e.clientY, active:false};
+  });
+  v.addEventListener("pointermove",e=>{
+    if(!drag) return;
+    if(!drag.active){
+      const dx=Math.abs(e.clientX-drag.x), dy=Math.abs(e.clientY-drag.y);
+      if(dy>12 && dy>dx){ drag=null; return; }   // 縦=スクロールに譲る
+      if(dx>7){ drag.active=true; }
+      else return;
+    }
+    const c=chrFromPoint(e.clientX,e.clientY);
+    if(c && +c.dataset.li===drag.li){ drag.b=+c.dataset.gi; highlightRange(drag.li,drag.a,drag.b); }
+    e.preventDefault();
+  });
+  const finish=async e=>{
+    if(!drag) return;
+    const d=drag; drag=null;
+    if(!d.active) return;             // 動いてなければタップ(クリックに任せる)
+    dragDidSelect=true;
+    const [a,b]=d.a<=d.b?[d.a,d.b]:[d.b,d.a];
+    await applySelection(d.li,a,b);
+  };
+  v.addEventListener("pointerup",finish);
+  v.addEventListener("pointercancel",()=>{drag=null; if(cur) renderLyrics();});
+}
+/* 選択範囲[a,b](文字インデックス)を1つのフレーズにする */
+async function applySelection(li,a,b){
+  if(sel){ commitComment(); sel=null; $("sheet").classList.add("hidden"); }
+  const line=cur.lines[li];
+  let pos=0;
+  const olds=line.segments.map(s=>{
+    const r={...s, start:pos, end:pos+[...s.text].length}; pos=r.end; return r;
+  });
+  const end=b+1;
+  const lineChars=[...olds.map(x=>x.text).join("")];
+  const inside=olds.filter(x=>x.start>=a && x.end<=end);
+  const news=[]; let newIdx=-1;
+  for(const s of olds){
+    if(s.end<=a || s.start>=end){
+      news.push({text:s.text, color:s.color, comment:s.comment});
+      continue;
+    }
+    const chars=[...s.text];
+    if(s.start<a)
+      news.push({text:chars.slice(0,a-s.start).join(""), color:s.color, comment:s.comment});
+    if(newIdx===-1){
+      news.push({text:lineChars.slice(a,end).join(""),
+        color:(inside.find(x=>x.color)||{}).color||null,
+        comment:inside.map(x=>x.comment).filter(Boolean).join(" / ")});
+      newIdx=news.length-1;
+    }
+    if(s.end>end)
+      news.push({text:chars.slice(end-s.start).join(""), color:s.color, comment:s.comment});
+  }
+  line.segments=news;
+  await saveCur();
+  sel={li, si:newIdx};
+  renderLyrics();
+  showSheet();
+}
+async function mergeSeg(dir){
+  commitComment();
+  const segs=cur.lines[sel.li].segments;
+  const i=sel.si, j=i+dir;
+  if(j<0||j>=segs.length) return;
+  const first = dir<0 ? segs[j] : segs[i];
+  const second = dir<0 ? segs[i] : segs[j];
+  const merged={
+    text:first.text+second.text,
+    color:first.color||second.color,
+    comment:[first.comment,second.comment].filter(Boolean).join(" / ")
+  };
+  segs.splice(Math.min(i,j),2,merged);
+  sel={li:sel.li, si:Math.min(i,j)};
+  await saveCur();
+  renderLyrics(); showSheet();
+}
+async function setColor(cid){
+  const seg=curSeg(); if(!seg) return;
+  seg.color=cid;
+  await saveCur();
+  renderLyrics(); showSheet();
+}
+
+/* ================= 曲追加・LRCLIB検索 ================= */
+function openAddModal(mode){
+  addModalMode=mode;
+  $("addModal").classList.remove("hidden");
+  $("searchResults").innerHTML="";
+  if(mode==="new"){
+    $("addTitle").textContent="曲を追加";
+    $("inTitle").value=""; $("inArtist").value=""; $("lyricsInput").value="";
+    $("fetchRow").style.display="flex";
+    $("lyricsInput").parentElement.style.display="block";
+  }else if(mode==="relyrics"){
+    $("addTitle").textContent="歌詞を編集し直す";
+    $("inTitle").value=cur.title; $("inArtist").value=cur.artist||"";
+    $("lyricsInput").value=cur.lines.map(l=>l.blank?"":l.segments.map(s=>s.text).join("")).join("\n");
+    $("fetchRow").style.display="flex";
+    $("lyricsInput").parentElement.style.display="block";
+  }else{ // info
+    $("addTitle").textContent="曲名・アーティストを変更";
+    $("inTitle").value=cur.title; $("inArtist").value=cur.artist||"";
+    $("fetchRow").style.display="none";
+    $("lyricsInput").parentElement.style.display="none";
+  }
+}
+function closeAddModal(){ $("addModal").classList.add("hidden"); }
+
+async function searchLyrics(){
+  const t=$("inTitle").value.trim(), a=$("inArtist").value.trim();
+  if(!t){ toast("曲名を入れてね"); return; }
+  const box=$("searchResults");
+  box.innerHTML=`<div class="searchstatus">検索中…</div>`;
+  try{
+    const q=encodeURIComponent((t+" "+a).trim());
+    const r=await fetch(`https://lrclib.net/api/search?q=${q}`);
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const list=(await r.json()).filter(x=>x.plainLyrics);
+    if(list.length===0){
+      box.innerHTML=`<div class="searchstatus">見つかりませんでした。「歌詞サイトで探す」からコピペしてね。</div>`;
+      return;
+    }
+    box.innerHTML=`<div class="searchstatus">タップして選択:</div>`;
+    list.slice(0,8).forEach(x=>{
+      const d=document.createElement("div");
+      d.className="result";
+      d.innerHTML=`<div class="rt"></div><div class="ra"></div>`;
+      d.querySelector(".rt").textContent=x.trackName;
+      d.querySelector(".ra").textContent=(x.artistName||"")+(x.albumName?" / "+x.albumName:"");
+      d.onclick=()=>{
+        $("lyricsInput").value=x.plainLyrics;
+        box.innerHTML=`<div class="searchstatus">✅ 歌詞を入れました。下で確認して保存してね。</div>`;
+      };
+      box.appendChild(d);
+    });
+  }catch(e){
+    box.innerHTML=`<div class="searchstatus">検索に失敗しました(ネット接続を確認)。コピペでもOK。</div>`;
+  }
+}
+function openLyricsSite(){
+  const t=$("inTitle").value.trim(), a=$("inArtist").value.trim();
+  const q=encodeURIComponent((t+" "+a+" 歌詞").trim());
+  window.open(`https://www.google.com/search?q=${q}`,"_blank");
+}
+async function saveAddModal(){
+  const t=$("inTitle").value.trim();
+  if(!t){ toast("曲名を入れてね"); return; }
+  const a=$("inArtist").value.trim();
+  if(addModalMode==="new"){
+    const ly=$("lyricsInput").value;
+    if(!ly.trim()){ toast("歌詞が空だよ"); return; }
+    const song={id:uid(), title:t, artist:a, createdAt:Date.now(), updatedAt:Date.now(), lines:lyricsToLines(ly)};
+    songs.push(song);
+    await idbPut("songs",song);
+    closeAddModal(); renderHome();
+    toast("曲を追加しました");
+  }else if(addModalMode==="relyrics"){
+    const ly=$("lyricsInput").value;
+    if(!ly.trim()){ toast("歌詞が空だよ"); return; }
+    cur.title=t; cur.artist=a; cur.lines=lyricsToLines(ly);
+    await saveCur();
+    closeAddModal();
+    $("songTitle").textContent=cur.title;
+    renderLyrics();
+    toast("歌詞を更新しました");
+  }else{
+    cur.title=t; cur.artist=a;
+    await saveCur();
+    closeAddModal();
+    $("songTitle").textContent=cur.title;
+    toast("変更しました");
+  }
+}
+
+/* ================= 凡例編集 ================= */
+function openLegendModal(){
+  $("homeMenu").classList.add("hidden");
+  $("legendModal").classList.remove("hidden");
+  const box=$("legendEdit"); box.innerHTML="";
+  for(const c of COLORS){
+    const row=document.createElement("div");
+    row.className="legend-row";
+    row.innerHTML=`<span class="sw" style="background:${c.css}"></span>
+      <input type="text" data-cid="${c.id}" placeholder="(未設定)">`;
+    row.querySelector("input").value=legend[c.id]||"";
+    box.appendChild(row);
+  }
+}
+async function saveLegend(){
+  document.querySelectorAll("#legendEdit input").forEach(inp=>{
+    legend[inp.dataset.cid]=inp.value.trim();
+  });
+  await idbPut("meta",{key:"legend", value:legend});
+  $("legendModal").classList.add("hidden");
+  toast("保存しました");
+}
+
+/* ================= バックアップ ================= */
+async function exportBackup(){
+  const data={app:"utareno", version:1, exportedAt:new Date().toISOString(), legend, songs};
+  const blob=new Blob([JSON.stringify(data,null,1)],{type:"application/json"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  const d=new Date();
+  a.download=`歌練習ノート_backup_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,"0")}${String(d.getDate()).padStart(2,"0")}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  $("homeMenu").classList.add("hidden");
+  toast("書き出しました");
+}
+async function importBackup(file){
+  try{
+    const data=JSON.parse(await file.text());
+    if(data.app!=="utareno"||!Array.isArray(data.songs)) throw 0;
+    let added=0, updated=0;
+    for(const s of data.songs){
+      const exist=songs.find(x=>x.id===s.id);
+      if(exist){ Object.assign(exist,s); updated++; }
+      else{ songs.push(s); added++; }
+      await idbPut("songs",s);
+    }
+    if(data.legend){ legend={...DEFAULT_LEGEND,...data.legend}; await idbPut("meta",{key:"legend",value:legend}); }
+    renderHome();
+    $("homeMenu").classList.add("hidden");
+    toast(`読み込み完了(追加${added}・更新${updated})`);
+  }catch(e){
+    toast("読み込めないファイルです");
+  }
+}
+
+/* ================= イベント ================= */
+$("fab").onclick=()=>openAddModal("new");
+$("addCancel").onclick=closeAddModal;
+$("addSave").onclick=saveAddModal;
+$("btnSearch").onclick=searchLyrics;
+$("btnOpenSite").onclick=openLyricsSite;
+
+$("backBtn").onclick=closeSong;
+$("editToggle").onclick=()=>{
+  editMode=!editMode;
+  if(!editMode) hideSheet();
+  updateEditToggle(); renderLyrics();
+  toast(editMode ? "文字をなぞって選択 / フレーズタップで編集" : "ビューモード(タップ無効)");
+};
+$("sheetDone").onclick=hideSheet;
+$("mergeL").onclick=()=>mergeSeg(-1);
+$("mergeR").onclick=()=>mergeSeg(1);
+$("cmtInput").addEventListener("blur",commitComment);
+
+$("homeMenuBtn").onclick=()=>$("homeMenu").classList.remove("hidden");
+$("miQR").onclick=async()=>{
+  $("homeMenu").classList.add("hidden");
+  $("qrModal").classList.remove("hidden");
+  const body=$("qrBody");
+  try{
+    const r=await fetch("/ip");
+    const {url}=await r.json();
+    body.innerHTML=`<img width="200" height="200" alt="QR"
+      src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(url)}">
+      <div style="margin-top:8px;font-size:14px;user-select:all;">${url}</div>`;
+  }catch(e){
+    body.innerHTML=`<div style="font-size:14px;color:var(--sub)">取得できませんでした。起動.batの黒い窓に表示される「スマホ:」のURLをiPhoneのSafariに直接入力してください。</div>`;
+  }
+};
+$("qrClose").onclick=()=>$("qrModal").classList.add("hidden");
+$("homeMenuClose").onclick=()=>$("homeMenu").classList.add("hidden");
+$("miLegend").onclick=openLegendModal;
+$("miExport").onclick=exportBackup;
+$("miImport").onclick=()=>$("importFile").click();
+$("importFile").onchange=e=>{ if(e.target.files[0]) importBackup(e.target.files[0]); e.target.value=""; };
+$("legendCancel").onclick=()=>$("legendModal").classList.add("hidden");
+$("legendSave").onclick=saveLegend;
+
+$("songMenuBtn").onclick=()=>{
+  $("songMenuTitle").textContent=cur.title;
+  $("songMenu").classList.remove("hidden");
+};
+$("songMenuClose").onclick=()=>$("songMenu").classList.add("hidden");
+$("miEditInfo").onclick=()=>{ $("songMenu").classList.add("hidden"); openAddModal("info"); };
+$("miEditLyrics").onclick=()=>{
+  $("songMenu").classList.add("hidden");
+  if(confirm("歌詞を編集し直すと、この曲の区切り・色・コメントはリセットされます。続けますか?"))
+    openAddModal("relyrics");
+};
+$("miDeleteSong").onclick=async()=>{
+  if(!confirm(`「${cur.title}」を削除しますか?この操作は戻せません。`)) return;
+  await idbDel("songs",cur.id);
+  songs=songs.filter(s=>s.id!==cur.id);
+  $("songMenu").classList.add("hidden");
+  closeSong();
+  toast("削除しました");
+};
+// モーダル背景タップで閉じる
+document.querySelectorAll(".modal").forEach(m=>{
+  m.addEventListener("click",e=>{ if(e.target===m) m.classList.add("hidden"); });
+});
+
+/* ================= 起動 ================= */
+(async function(){
+  await openDB();
+  songs = await idbAll("songs");
+  const lg = await idbGet("meta","legend");
+  if(lg) legend={...DEFAULT_LEGEND,...lg.value};
+  renderHome();
+  initDragSelect();
+  // ストレージの永続化を要求(Safariのデータ削除対策)
+  if(navigator.storage && navigator.storage.persist) navigator.storage.persist();
+  // PWA: オフライン用サービスワーカー(HTTPS/localhostでのみ有効)
+  if("serviceWorker" in navigator){
+    navigator.serviceWorker.register("sw.js").catch(()=>{});
+  }
+})();
+</script>
+</body>
+</html>
