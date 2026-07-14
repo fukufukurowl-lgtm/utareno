@@ -230,11 +230,14 @@ const tx = (s,m)=>db.transaction(s,m).objectStore(s);
 const idbAll = s=>new Promise((res,rej)=>{const r=tx(s,"readonly").getAll(); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);});
 const idbPut = (s,v)=>new Promise((res,rej)=>{const r=tx(s,"readwrite").put(v); r.onsuccess=res; r.onerror=()=>rej(r.error);});
 const idbDel = (s,k)=>new Promise((res,rej)=>{const r=tx(s,"readwrite").delete(k); r.onsuccess=res; r.onerror=()=>rej(r.error);});
+const idbGet = (s,k)=>new Promise((res,rej)=>{const r=tx(s,"readonly").get(k); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);});
 
 /* ================= 状態 ================= */
 let songs=[], cur=null;
 let editMode=true;                    // true=手書き, false=ビュー
 let tool="pen", penColor=PEN_COLORS[0], markerColor=MARKER_COLORS[0];
+let fingerDraws=true;                 // false=Apple Pencil専用(指はスクロール)
+let pencilPrefSet=false;              // ユーザーが手動で切り替えたか
 let view={scale:1, tx:0, ty:0};       // 紙の表示変換
 let undoStack=[];
 let addModalMode="new";
@@ -346,8 +349,49 @@ function strokePath(s){
   d+=` L${l[0]} ${l[1]}`;
   return d;
 }
+/* 筆圧が記録されているペン線か(Apple Pencil) */
+function hasPressure(s){
+  if(s.t!=="pen") return false;
+  let mn=1, mx=0;
+  for(const p of s.pts){
+    if(p[2]===undefined) return false;
+    mn=Math.min(mn,p[2]); mx=Math.max(mx,p[2]);
+  }
+  return (mx-mn)>0.04;
+}
+/* 筆圧で太さが変わるリボン(塗りつぶしパス) */
+function ribbonPath(s){
+  const pts=s.pts;
+  if(pts.length<2) return strokePath(s);
+  const rs=pts.map(p=>{
+    const pr=p[2]!==undefined?p[2]:0.5;
+    return Math.max(0.7, s.w/2*(0.35+1.3*pr));
+  });
+  const L=[], R=[];
+  for(let i=0;i<pts.length;i++){
+    const a=pts[Math.max(0,i-1)], b=pts[Math.min(pts.length-1,i+1)];
+    let dx=b[0]-a[0], dy=b[1]-a[1];
+    const len=Math.hypot(dx,dy)||1; dx/=len; dy/=len;
+    L.push([pts[i][0]-dy*rs[i], pts[i][1]+dx*rs[i]]);
+    R.push([pts[i][0]+dy*rs[i], pts[i][1]-dx*rs[i]]);
+  }
+  const f=v=>v.toFixed(1);
+  let d=`M${f(L[0][0])} ${f(L[0][1])}`;
+  for(let i=1;i<L.length;i++) d+=`L${f(L[i][0])} ${f(L[i][1])}`;
+  const rl=rs[rs.length-1];
+  d+=`A${f(rl)} ${f(rl)} 0 0 1 ${f(R[R.length-1][0])} ${f(R[R.length-1][1])}`;
+  for(let i=R.length-2;i>=0;i--) d+=`L${f(R[i][0])} ${f(R[i][1])}`;
+  d+=`A${f(rs[0])} ${f(rs[0])} 0 0 1 ${f(L[0][0])} ${f(L[0][1])}Z`;
+  return d;
+}
 function strokeEl(s){
   const el=document.createElementNS("http://www.w3.org/2000/svg","path");
+  if(hasPressure(s)){
+    el.setAttribute("d",ribbonPath(s));
+    el.setAttribute("fill",s.c);
+    el.setAttribute("stroke","none");
+    return el;
+  }
   el.setAttribute("d",strokePath(s));
   el.setAttribute("fill","none");
   el.setAttribute("stroke",s.c);
@@ -389,95 +433,156 @@ function toPaper(cx,cy){
   return [ (cx-st.left-view.tx)/view.scale, (cy-st.top-view.ty)/view.scale ];
 }
 
-/* ================= 入力(描画・パン・ピンチ) ================= */
-const pointers=new Map();
-let stroke=null, liveEl=null, gesture=null, erasing=false, erased=[];
+/* ================= 入力(描画・パン・ピンチ) =================
+   Apple Pencil最適化:
+   - ペン(pointerType:"pen")は常に描く。指はfingerDraws=falseならスクロール/ピンチ専用
+   - ペン使用中は指ジェスチャを無効化(パームリジェクション)
+   - 筆圧を記録([x,y,p])、coalesced eventsで高密度サンプリング */
+const touchPts=new Map();
+let stroke=null, liveEl=null, liveRibbon=false, drawPid=null, erasePid=null;
+let gesture=null, erased=[];
 
+function startPanFrom(x,y){ gesture={mode:"pan", x, y, tx:view.tx, ty:view.ty, started:false}; }
+function startPinch(){
+  const pts=[...touchPts.values()];
+  gesture={mode:"pinch",
+    d:Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y),
+    mx:(pts[0].x+pts[1].x)/2, my:(pts[0].y+pts[1].y)/2,
+    scale:view.scale, tx:view.tx, ty:view.ty};
+}
+function addPoint(ev, isPen){
+  const [x,y]=toPaper(ev.clientX,ev.clientY);
+  const last=stroke.pts[stroke.pts.length-1];
+  if(Math.hypot(x-last[0],y-last[1]) <= 1.2) return;
+  const pt=[Math.round(x*10)/10, Math.round(y*10)/10];
+  if(isPen){
+    const prev=stroke._lp!==undefined?stroke._lp:ev.pressure;
+    const p=prev*0.65+ev.pressure*0.35;
+    stroke._lp=p;
+    pt.push(Math.round(p*100)/100);
+  }
+  stroke.pts.push(pt);
+}
 function initStage(){
   const st=$("stage");
   st.addEventListener("pointerdown",e=>{
     try{ st.setPointerCapture(e.pointerId); }catch(_){}
-    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    if(pointers.size===1){
-      if(editMode && tool!=="eraser"){
-        const [x,y]=toPaper(e.clientX,e.clientY);
-        const def = tool==="marker"
-          ? {t:"marker", c:markerColor, w:30}
-          : {t:"pen", c:penColor, w: tool==="fat"?8:4};
-        stroke={...def, pts:[[Math.round(x*10)/10, Math.round(y*10)/10]]};
-        liveEl=strokeEl(stroke);
-        $("paperSvg").querySelector("#liveLayer").appendChild(liveEl);
-      }else if(editMode && tool==="eraser"){
-        erasing=true; erased=[];
-        eraseAt(e.clientX,e.clientY);
-      }else{
-        gesture={mode:"pan", x:e.clientX, y:e.clientY, tx:view.tx, ty:view.ty};
-      }
-    }else if(pointers.size===2){
-      // 描きかけを破棄してピンチへ
-      if(stroke){ liveEl.remove(); stroke=null; liveEl=null; }
-      erasing=false;
-      const pts=[...pointers.values()];
-      gesture={mode:"pinch",
-        d:Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y),
-        mx:(pts[0].x+pts[1].x)/2, my:(pts[0].y+pts[1].y)/2,
-        scale:view.scale, tx:view.tx, ty:view.ty};
+    const isPen=e.pointerType==="pen";
+    // Apple Pencil初検出 → 指をスクロール専用に自動切替
+    if(isPen && fingerDraws && !pencilPrefSet){
+      fingerDraws=false; pencilPrefSet=true;
+      idbPut("meta",{key:"pencil", value:{fingerDraws:false}});
+      renderToolbar();
+      toast("Apple Pencil検出: 指はスクロール専用になりました");
     }
+    const drawer = editMode && (isPen || e.pointerType==="mouse" || fingerDraws);
+    if(!drawer){
+      // 指(またはビュー中の全ポインタ)=ジェスチャ
+      touchPts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      if(touchPts.size===1) startPanFrom(e.clientX,e.clientY);
+      else if(touchPts.size===2) startPinch();
+      return;
+    }
+    // fingerDraws時の指: 2本目が来たら描きかけを捨ててピンチ
+    if(!isPen && e.pointerType!=="mouse"){
+      touchPts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      if(touchPts.size===2){
+        if(stroke){ liveEl.remove(); stroke=null; liveEl=null; drawPid=null; }
+        if(erasePid!==null){ erasePid=null; erased=[]; }
+        startPinch();
+        return;
+      }
+    }
+    if(drawPid!==null || erasePid!==null) return;
+    if(tool==="eraser"){
+      erasePid=e.pointerId; erased=[];
+      eraseAt(e.clientX,e.clientY);
+      return;
+    }
+    const def = tool==="marker"
+      ? {t:"marker", c:markerColor, w:30}
+      : {t:"pen", c:penColor, w: tool==="fat"?8:4};
+    const [x,y]=toPaper(e.clientX,e.clientY);
+    stroke={...def, pts:[[Math.round(x*10)/10, Math.round(y*10)/10]]};
+    if(isPen && def.t==="pen"){
+      stroke._lp=e.pressure;
+      stroke.pts[0].push(Math.round(e.pressure*100)/100);
+    }
+    drawPid=e.pointerId;
+    liveRibbon = isPen && def.t==="pen";
+    liveEl=document.createElementNS("http://www.w3.org/2000/svg","path");
+    if(liveRibbon){
+      liveEl.setAttribute("fill",stroke.c);
+      liveEl.setAttribute("stroke","none");
+    }else{
+      liveEl.setAttribute("fill","none");
+      liveEl.setAttribute("stroke",stroke.c);
+      liveEl.setAttribute("stroke-width",stroke.w);
+      liveEl.setAttribute("stroke-linecap","round");
+      liveEl.setAttribute("stroke-linejoin","round");
+      if(stroke.t==="marker"){ liveEl.setAttribute("opacity","0.42"); liveEl.style.mixBlendMode="multiply"; }
+    }
+    liveEl.setAttribute("d",strokePath(stroke));
+    $("paperSvg").querySelector("#liveLayer").appendChild(liveEl);
   });
   st.addEventListener("pointermove",e=>{
-    if(!pointers.has(e.pointerId)) return;
-    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    if(stroke){
-      const [x,y]=toPaper(e.clientX,e.clientY);
-      const last=stroke.pts[stroke.pts.length-1];
-      if(Math.hypot(x-last[0],y-last[1]) > 1.2){
-        stroke.pts.push([Math.round(x*10)/10, Math.round(y*10)/10]);
-        liveEl.setAttribute("d",strokePath(stroke));
-      }
-    }else if(erasing){
-      eraseAt(e.clientX,e.clientY);
-    }else if(gesture && gesture.mode==="pan" && pointers.size===1){
+    if(stroke && e.pointerId===drawPid){
+      let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+      if(!evs.length) evs=[e];
+      const isPen = e.pointerType==="pen" && stroke.t==="pen";
+      for(const ev of evs) addPoint(ev,isPen);
+      liveEl.setAttribute("d", liveRibbon ? ribbonPath(stroke) : strokePath(stroke));
+      return;
+    }
+    if(e.pointerId===erasePid){ eraseAt(e.clientX,e.clientY); return; }
+    if(!touchPts.has(e.pointerId)) return;
+    touchPts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    // ペンで描いている最中は指ジェスチャ無効(手のひら対策)
+    if(stroke || erasePid!==null) return;
+    if(gesture && gesture.mode==="pan" && touchPts.size===1){
+      if(!gesture.started && Math.hypot(e.clientX-gesture.x, e.clientY-gesture.y)<8) return;
+      gesture.started=true;
       view.tx=gesture.tx+(e.clientX-gesture.x);
       view.ty=gesture.ty+(e.clientY-gesture.y);
       clampView(); applyView();
-    }else if(gesture && gesture.mode==="pinch" && pointers.size===2){
-      const pts=[...pointers.values()];
+    }else if(gesture && gesture.mode==="pinch" && touchPts.size===2){
+      const pts=[...touchPts.values()];
       const d=Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y);
       const mx=(pts[0].x+pts[1].x)/2, my=(pts[0].y+pts[1].y)/2;
       const k=d/gesture.d;
       view.scale=gesture.scale*k;
       const stR=$("stage").getBoundingClientRect();
-      // ピンチ中心を基準に拡大
       view.tx=mx-stR.left-((gesture.mx-stR.left-gesture.tx)*k);
       view.ty=my-stR.top-((gesture.my-stR.top-gesture.ty)*k);
       clampView(); applyView();
     }
   });
   const up=async e=>{
-    pointers.delete(e.pointerId);
-    if(stroke && pointers.size===0){
-      if(stroke.pts.length>1 || true){
-        cur.ink.push(stroke);
-        $("paperSvg").querySelector("#inkLayer").appendChild(liveEl);
-        undoStack.push({type:"add", stroke});
-        if(undoStack.length>80) undoStack.shift();
-        scheduleSave();
-      }
-      stroke=null; liveEl=null;
+    if(e.pointerId===drawPid && stroke){
+      delete stroke._lp;
+      cur.ink.push(stroke);
+      liveEl.remove();
+      $("paperSvg").querySelector("#inkLayer").appendChild(strokeEl(stroke));
+      undoStack.push({type:"add", stroke});
+      if(undoStack.length>80) undoStack.shift();
+      scheduleSave();
+      stroke=null; liveEl=null; drawPid=null;
     }
-    if(erasing && pointers.size===0){
-      erasing=false;
+    if(e.pointerId===erasePid){
+      erasePid=null;
       if(erased.length){
         undoStack.push({type:"del", strokes:erased});
         erased=[];
         scheduleSave();
       }
     }
-    if(pointers.size<2) gesture=null;
-    if(pointers.size===1){
-      const p=[...pointers.values()][0];
-      gesture={mode:"pan", x:p.x, y:p.y, tx:view.tx, ty:view.ty};
-      if(editMode && tool!=="eraser") gesture=null; // 編集中は残り1本で描かない(誤描画防止で何もしない)
+    if(touchPts.delete(e.pointerId)){
+      if(touchPts.size===1){
+        const p=[...touchPts.values()][0];
+        startPanFrom(p.x,p.y);
+      }else if(touchPts.size===0){
+        gesture=null;
+      }
     }
   };
   st.addEventListener("pointerup",up);
@@ -556,6 +661,18 @@ function renderToolbar(){
   u.className="tool"; u.innerHTML="↩️<small>戻す</small>";
   u.onclick=undo;
   tb.appendChild(u);
+  // 入力切替: ✍️=Apple Pencil専用(指はスクロール) / 👆=指でも描く
+  const sepP=document.createElement("div"); sepP.className="tb-sep"; tb.appendChild(sepP);
+  const m=document.createElement("button");
+  m.className="tool"+(fingerDraws?"":" sel");
+  m.innerHTML=fingerDraws?"👆<small>指OK</small>":"✍️<small>ペンのみ</small>";
+  m.onclick=()=>{
+    fingerDraws=!fingerDraws; pencilPrefSet=true;
+    idbPut("meta",{key:"pencil", value:{fingerDraws}});
+    renderToolbar();
+    toast(fingerDraws?"指でも描けます(2本指で移動)":"Apple Pencilでのみ描画(指はスクロール)");
+  };
+  tb.appendChild(m);
 }
 
 /* ================= 曲画面 ================= */
@@ -572,6 +689,7 @@ function openSong(id){
   renderPaper();
   fitPaper();
   const h=$("zoomHint");
+  h.textContent=fingerDraws?"1本指で書く / 2本指で移動・ピンチ":"ペンで書く / 指で移動・ピンチ";
   h.classList.add("show");
   setTimeout(()=>h.classList.remove("show"),2600);
 }
@@ -776,6 +894,8 @@ window.addEventListener("resize",()=>{ if(cur){ clampView(); applyView(); } });
 (async function(){
   await openDB();
   songs=(await idbAll("songs")).map(migrate);
+  const pc=await idbGet("meta","pencil");
+  if(pc && pc.value){ fingerDraws=!!pc.value.fingerDraws; pencilPrefSet=true; }
   renderHome();
   initStage();
   if(navigator.storage && navigator.storage.persist) navigator.storage.persist();
