@@ -73,6 +73,21 @@ header h1{font-size:17px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text
   background:rgba(40,35,28,.75);color:#fff;font-size:12px;padding:7px 14px;border-radius:16px;
   pointer-events:none;white-space:nowrap;opacity:0;transition:opacity .3s;}
 #zoomHint.show{opacity:1;}
+/* ===== 録音・再生バー ===== */
+#audioBar{display:flex;align-items:center;gap:8px;padding:8px 12px calc(8px + var(--safe-b));
+  background:rgba(250,247,241,.97);border-top:1px solid var(--line);flex:none;}
+.abtn{width:44px;height:44px;border-radius:12px;background:#f0ebe2;font-size:20px;
+  display:flex;align-items:center;justify-content:center;flex:none;}
+.abtn:active{background:var(--accent-soft);}
+.abtn.rec{background:#d93025;color:#fff;animation:recpulse 1.1s infinite;}
+@keyframes recpulse{50%{opacity:.55}}
+#seek{flex:1;accent-color:var(--accent);min-width:60px;}
+#timeLbl{font-size:12px;color:var(--sub);text-align:right;font-variant-numeric:tabular-nums;flex:none;}
+.takerow{display:flex;align-items:center;gap:8px;padding:10px 8px;border-bottom:1px solid var(--line);border-radius:10px;}
+.takerow.sel{background:var(--accent-soft);}
+.takerow .tn{flex:1;font-size:14px;font-weight:600;}
+.takerow .td{font-size:11px;color:var(--sub);font-weight:normal;margin-top:2px;}
+.takerow .tdel{width:38px;height:38px;border-radius:10px;font-size:16px;flex:none;}
 
 /* ===== モーダル共通 ===== */
 .modal{position:fixed;inset:0;z-index:40;background:rgba(40,35,28,.45);
@@ -131,6 +146,29 @@ header h1{font-size:17px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text
   <div id="stage">
     <div id="paper"><svg id="paperSvg" xmlns="http://www.w3.org/2000/svg"></svg></div>
     <div id="zoomHint">2本指で移動・ピンチで拡大 / 1本指で書く</div>
+  </div>
+  <div id="audioBar">
+    <button class="abtn" id="recBtn">🎙</button>
+    <button class="abtn" id="playBtn">▶️</button>
+    <input type="range" id="seek" min="0" max="1000" value="0">
+    <span id="timeLbl">テイクなし</span>
+    <button class="abtn" id="takesBtn">📼</button>
+  </div>
+</div>
+
+<!-- ============ テイク一覧モーダル ============ -->
+<div id="takesModal" class="modal hidden">
+  <div class="panel">
+    <h2>📼 録音テイク</h2>
+    <div id="takesList"></div>
+    <div class="rowbtns">
+      <button class="btn-sec" id="importAudio">📂 音声ファイルを取り込む</button>
+    </div>
+    <div style="font-size:12px;color:var(--sub);margin-top:8px;line-height:1.7;">
+      iPhoneのボイスメモは: ボイスメモで録音 → 共有 → 「"ファイル"に保存」→ ここで取り込む
+    </div>
+    <div class="rowbtns"><button class="btn-sec" id="takesClose">閉じる</button></div>
+    <input type="file" id="audioFile" accept="audio/*" class="hidden">
   </div>
 </div>
 
@@ -216,11 +254,12 @@ const TOOLS = [
 let db;
 function openDB(){
   return new Promise((res,rej)=>{
-    const rq = indexedDB.open("utareno", 1);
+    const rq = indexedDB.open("utareno", 2);
     rq.onupgradeneeded = e=>{
       const d = e.target.result;
-      d.createObjectStore("songs", {keyPath:"id"});
-      d.createObjectStore("meta", {keyPath:"key"});
+      if(!d.objectStoreNames.contains("songs")) d.createObjectStore("songs", {keyPath:"id"});
+      if(!d.objectStoreNames.contains("meta"))  d.createObjectStore("meta", {keyPath:"key"});
+      if(!d.objectStoreNames.contains("takes")) d.createObjectStore("takes", {keyPath:"id"});
     };
     rq.onsuccess = e=>{db=e.target.result; res();};
     rq.onerror = ()=>rej(rq.error);
@@ -712,12 +751,15 @@ function openSong(id){
   renderToolbar();
   renderPaper();
   fitPaper();
+  loadTakes();
   const h=$("zoomHint");
   h.textContent=fingerDraws?"1本指で書く / 2本指で移動・ピンチ":"ペンで書く / 指で移動・ピンチ";
   h.classList.add("show");
   setTimeout(()=>h.classList.remove("show"),2600);
 }
 async function closeSong(){
+  if(rec) rec.stop();
+  audio.pause();
   await saveNow();
   cur=null;
   $("songScreen").classList.add("hidden");
@@ -728,6 +770,97 @@ function updateModeToggle(){
   const b=$("modeToggle");
   b.textContent=editMode?"👁 ビュー":"✏️ 手書き";
   b.className="pillbtn "+(editMode?"off":"on");
+}
+
+/* ================= 録音・再生(テイク) ================= */
+let takes=[], curTake=null, rec=null, recChunks=[], recTimer=null, recStart=0;
+const audio=new Audio();
+
+const fmtTime=s=>{ if(!isFinite(s)||s<0) s=0; s=Math.round(s); return Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); };
+function updateBar(){
+  if(rec) return; // 録音中はRECタイマー表示を優先
+  $("timeLbl").textContent = curTake ? fmtTime(audio.currentTime)+" / "+fmtTime(audio.duration) : "テイクなし";
+}
+function loadAudio(){
+  audio.pause();
+  if(audio.src && audio.src.startsWith("blob:")) URL.revokeObjectURL(audio.src);
+  audio.removeAttribute("src");
+  if(curTake) audio.src=URL.createObjectURL(curTake.blob);
+  audio.load();
+  $("playBtn").textContent="▶️";
+  $("seek").value=0;
+  updateBar();
+}
+audio.ontimeupdate=()=>{ if(audio.duration) $("seek").value=audio.currentTime/audio.duration*1000; updateBar(); };
+audio.onloadedmetadata=updateBar;
+audio.onended=()=>{ $("playBtn").textContent="▶️"; };
+
+async function loadTakes(){
+  takes=(await idbAll("takes")).filter(t=>t.songId===cur.id).sort((a,b)=>b.createdAt-a.createdAt);
+  curTake=takes[0]||null;
+  loadAudio();
+}
+async function toggleRec(){
+  if(rec){ rec.stop(); return; }
+  if(!navigator.mediaDevices || !window.MediaRecorder){ toast("この環境では録音できません"); return; }
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const mime=["audio/mp4","audio/webm;codecs=opus","audio/webm"].find(m=>MediaRecorder.isTypeSupported(m))||"";
+    rec=new MediaRecorder(stream, mime?{mimeType:mime}:undefined);
+    recChunks=[];
+    rec.ondataavailable=e=>{ if(e.data.size) recChunks.push(e.data); };
+    rec.onstop=async()=>{
+      stream.getTracks().forEach(t=>t.stop());
+      const blob=new Blob(recChunks,{type:rec.mimeType||"audio/webm"});
+      rec=null;
+      clearInterval(recTimer);
+      $("recBtn").classList.remove("rec");
+      $("recBtn").textContent="🎙";
+      const d=new Date();
+      const take={id:uid(), songId:cur.id, createdAt:Date.now(), blob,
+        name:`テイク ${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`};
+      await idbPut("takes",take);
+      takes.unshift(take); curTake=take;
+      loadAudio();
+      toast("録音を保存しました");
+    };
+    rec.start();
+    recStart=Date.now();
+    audio.pause(); $("playBtn").textContent="▶️";
+    $("recBtn").classList.add("rec");
+    $("recBtn").textContent="⏹";
+    recTimer=setInterval(()=>{ $("timeLbl").textContent="● "+fmtTime((Date.now()-recStart)/1000); },400);
+    $("timeLbl").textContent="● 0:00";
+  }catch(err){
+    rec=null;
+    toast("マイクを使えませんでした(権限を確認してね)");
+  }
+}
+function renderTakes(){
+  const box=$("takesList");
+  box.innerHTML = takes.length ? "" :
+    `<div class="searchstatus">まだテイクがありません。🎙で録音するか、下のボタンで音声ファイルを取り込んでね。</div>`;
+  for(const t of takes){
+    const row=document.createElement("div");
+    row.className="takerow"+(curTake===t?" sel":"");
+    row.innerHTML=`<div class="tn"></div><button class="tdel">🗑</button>`;
+    const tn=row.querySelector(".tn");
+    tn.textContent=t.name;
+    const td=document.createElement("div");
+    td.className="td";
+    td.textContent=fmtDate(t.createdAt)+(curTake===t?" ・選択中":"");
+    tn.appendChild(td);
+    row.onclick=()=>{ curTake=t; loadAudio(); renderTakes(); };
+    row.querySelector(".tdel").onclick=async e=>{
+      e.stopPropagation();
+      if(!confirm(`「${t.name}」を削除しますか?`)) return;
+      await idbDel("takes",t.id);
+      takes=takes.filter(x=>x!==t);
+      if(curTake===t){ curTake=takes[0]||null; loadAudio(); }
+      renderTakes();
+    };
+    box.appendChild(row);
+  }
 }
 
 /* ================= 曲追加・LRCLIB ================= */
@@ -819,8 +952,19 @@ async function saveAddModal(){
 }
 
 /* ================= バックアップ ================= */
+const blobToDataURL=b=>new Promise((res,rej)=>{
+  const r=new FileReader();
+  r.onload=()=>res(r.result); r.onerror=()=>rej(r.error);
+  r.readAsDataURL(b);
+});
 async function exportBackup(){
-  const data={app:"utareno", version:2, exportedAt:new Date().toISOString(), songs};
+  toast("書き出し中…");
+  const allTakes=await idbAll("takes");
+  const takesOut=[];
+  for(const t of allTakes){
+    takesOut.push({id:t.id, songId:t.songId, name:t.name, createdAt:t.createdAt, data:await blobToDataURL(t.blob)});
+  }
+  const data={app:"utareno", version:3, exportedAt:new Date().toISOString(), songs, takes:takesOut};
   const blob=new Blob([JSON.stringify(data)],{type:"application/json"});
   const a=document.createElement("a");
   a.href=URL.createObjectURL(blob);
@@ -843,9 +987,18 @@ async function importBackup(file){
       else{ songs.push(s); added++; }
       await idbPut("songs",s);
     }
+    let takesIn=0;
+    if(Array.isArray(data.takes)){
+      for(const t of data.takes){
+        if(!t.data) continue;
+        const blob=await (await fetch(t.data)).blob();
+        await idbPut("takes",{id:t.id, songId:t.songId, name:t.name, createdAt:t.createdAt, blob});
+        takesIn++;
+      }
+    }
     renderHome();
     $("homeMenu").classList.add("hidden");
-    toast(`読み込み完了(追加${added}・更新${updated})`);
+    toast(`読み込み完了(曲: 追加${added}・更新${updated} / テイク${takesIn})`);
   }catch(e){
     toast("読み込めないファイルです");
   }
@@ -863,6 +1016,29 @@ $("modeToggle").onclick=()=>{
   updateModeToggle(); renderToolbar();
   toast(editMode?"手書きモード: 1本指で書く / 2本指で移動":"ビューモード: 1本指で移動");
 };
+/* 録音バー */
+$("recBtn").onclick=toggleRec;
+$("playBtn").onclick=()=>{
+  if(!curTake){ toast("テイクがありません(🎙で録音してね)"); return; }
+  if(audio.paused){ audio.play(); $("playBtn").textContent="⏸"; }
+  else{ audio.pause(); $("playBtn").textContent="▶️"; }
+};
+$("seek").oninput=e=>{ if(audio.duration) audio.currentTime=e.target.value/1000*audio.duration; };
+$("takesBtn").onclick=()=>{ $("takesModal").classList.remove("hidden"); renderTakes(); };
+$("takesClose").onclick=()=>$("takesModal").classList.add("hidden");
+$("importAudio").onclick=()=>$("audioFile").click();
+$("audioFile").onchange=async e=>{
+  const f=e.target.files[0];
+  e.target.value="";
+  if(!f) return;
+  const take={id:uid(), songId:cur.id, createdAt:Date.now(), blob:f,
+    name:f.name.replace(/\.[^.]+$/,"")||"取り込み"};
+  await idbPut("takes",take);
+  takes.unshift(take); curTake=take;
+  loadAudio(); renderTakes();
+  toast("取り込みました");
+};
+
 $("homeMenuBtn").onclick=()=>$("homeMenu").classList.remove("hidden");
 $("homeMenuClose").onclick=()=>$("homeMenu").classList.add("hidden");
 $("miExport").onclick=exportBackup;
@@ -899,7 +1075,10 @@ $("miClearInk").onclick=async()=>{
   toast("消しました(↩️で戻せます)");
 };
 $("miDeleteSong").onclick=async()=>{
-  if(!confirm(`「${cur.title}」を削除しますか?この操作は戻せません。`)) return;
+  if(!confirm(`「${cur.title}」を削除しますか?録音テイクも一緒に消えます。この操作は戻せません。`)) return;
+  audio.pause();
+  for(const t of takes) await idbDel("takes",t.id);
+  takes=[]; curTake=null;
   await idbDel("songs",cur.id);
   songs=songs.filter(s=>s.id!==cur.id);
   $("songMenu").classList.add("hidden");
