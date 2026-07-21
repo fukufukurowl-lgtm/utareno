@@ -504,8 +504,8 @@ const touchPts=new Map();
 let stroke=null, drawPid=null, erasePid=null;
 let gesture=null, erased=[];
 
-/* --- 書き途中はCanvasに差分描画(軽量)、確定時にSVG化 --- */
-let lcv=null, lctx=null, dpr=1, drawnIdx=0, rafPending=false;
+/* --- 書き途中はCanvasに曲線描画(軽量)、確定時にSVG化 --- */
+let lcv=null, lctx=null, dpr=1, rafPending=false;
 function resizeLiveCanvas(){
   if(!lcv) return;
   const st=$("stage").getBoundingClientRect();
@@ -519,7 +519,6 @@ function clearLive(){
   if(lctx) lctx.clearRect(0,0,lcv.width,lcv.height);
   lcv.style.opacity="1";
   lcv.style.mixBlendMode="normal";
-  drawnIdx=0;
 }
 function liveW(p){
   if(stroke.t==="pen" && p[2]!==undefined)
@@ -530,24 +529,34 @@ function drawLive(){
   rafPending=false;
   if(!stroke||!lctx) return;
   const pts=stroke.pts;
+  // ストローク全体を毎フレーム描き直す(1本だけなので軽い)。
+  // 点を中点二次ベジェで結ぶので、点がまばら(=ゆっくり書いた)でも滑らかな曲線になる。
+  lctx.clearRect(0,0,lcv.width,lcv.height);
   lctx.strokeStyle=stroke.c; lctx.fillStyle=stroke.c;
   lctx.lineCap="round"; lctx.lineJoin="round";
   const sx=p=>(p[0]*view.scale+view.tx)*dpr;
   const sy=p=>(p[1]*view.scale+view.ty)*dpr;
-  if(drawnIdx===0 && pts.length){
+  if(pts.length===1){
     lctx.beginPath();
     lctx.arc(sx(pts[0]),sy(pts[0]),liveW(pts[0])/2,0,Math.PI*2);
     lctx.fill();
-    drawnIdx=1;
+    return;
   }
-  for(let i=drawnIdx;i<pts.length;i++){
-    lctx.lineWidth=(liveW(pts[i-1])+liveW(pts[i]))/2;
+  for(let i=1;i<pts.length;i++){
+    const a=pts[i-1], b=pts[i];
+    lctx.lineWidth=(liveW(a)+liveW(b))/2;
     lctx.beginPath();
-    lctx.moveTo(sx(pts[i-1]),sy(pts[i-1]));
-    lctx.lineTo(sx(pts[i]),sy(pts[i]));
+    // 区間の始点=前区間の中点、制御点=a、終点=aとbの中点(端は実点)
+    const startX = i===1 ? sx(a) : (sx(pts[i-2])+sx(a))/2;
+    const startY = i===1 ? sy(a) : (sy(pts[i-2])+sy(a))/2;
+    lctx.moveTo(startX,startY);
+    if(i===pts.length-1){
+      lctx.quadraticCurveTo(sx(a),sy(a),sx(b),sy(b));
+    }else{
+      lctx.quadraticCurveTo(sx(a),sy(a),(sx(a)+sx(b))/2,(sy(a)+sy(b))/2);
+    }
     lctx.stroke();
   }
-  drawnIdx=pts.length;
 }
 function scheduleLiveDraw(){
   if(rafPending) return;
@@ -566,11 +575,12 @@ function startPinch(){
 function addPoint(ev, isPen){
   let [x,y]=toPaper(ev.clientX,ev.clientY);
   const last=stroke.pts[stroke.pts.length-1];
-  if(Math.hypot(x-last[0],y-last[1]) <= 1.2) return;
-  // 位置を軽くならす(手ブレ・センサノイズ対策)
-  x=last[0]*0.22+x*0.78;
-  y=last[1]*0.22+y*0.78;
-  const pt=[Math.round(x*10)/10, Math.round(y*10)/10];
+  // 間引きは「画面上の距離」で判定(拡大しても低速でも点が抜けない)
+  if(Math.hypot(x-last[0],y-last[1])*view.scale <= 0.6) return;
+  // ごく軽い平滑化(遅延を出さない。曲線補間で滑らかにする)
+  x=last[0]*0.12+x*0.88;
+  y=last[1]*0.12+y*0.88;
+  const pt=[Math.round(x*100)/100, Math.round(y*100)/100];
   if(isPen){
     const prev=stroke._lp!==undefined?stroke._lp:ev.pressure;
     const p=prev*0.78+ev.pressure*0.22;
