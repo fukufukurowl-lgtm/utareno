@@ -73,6 +73,7 @@ header h1{font-size:17px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text
   background:rgba(40,35,28,.75);color:#fff;font-size:12px;padding:7px 14px;border-radius:16px;
   pointer-events:none;white-space:nowrap;opacity:0;transition:opacity .3s;}
 #zoomHint.show{opacity:1;}
+#liveCanvas{position:absolute;inset:0;pointer-events:none;z-index:5;}
 /* ===== 録音・再生バー ===== */
 #audioBar{display:flex;align-items:center;gap:8px;padding:8px 12px calc(8px + var(--safe-b));
   background:rgba(250,247,241,.97);border-top:1px solid var(--line);flex:none;}
@@ -145,6 +146,7 @@ header h1{font-size:17px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text
   <div id="toolbar"></div>
   <div id="stage">
     <div id="paper"><svg id="paperSvg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+    <canvas id="liveCanvas"></canvas>
     <div id="zoomHint">2本指で移動・ピンチで拡大 / 1本指で書く</div>
   </div>
   <div id="audioBar">
@@ -499,8 +501,59 @@ function toPaper(cx,cy){
    - ペン使用中は指ジェスチャを無効化(パームリジェクション)
    - 筆圧を記録([x,y,p])、coalesced eventsで高密度サンプリング */
 const touchPts=new Map();
-let stroke=null, liveEl=null, liveRibbon=false, drawPid=null, erasePid=null;
+let stroke=null, drawPid=null, erasePid=null;
 let gesture=null, erased=[];
+
+/* --- 書き途中はCanvasに差分描画(軽量)、確定時にSVG化 --- */
+let lcv=null, lctx=null, dpr=1, drawnIdx=0, rafPending=false;
+function resizeLiveCanvas(){
+  if(!lcv) return;
+  const st=$("stage").getBoundingClientRect();
+  dpr=window.devicePixelRatio||1;
+  lcv.width=Math.max(1,Math.round(st.width*dpr));
+  lcv.height=Math.max(1,Math.round(st.height*dpr));
+  lcv.style.width=st.width+"px";
+  lcv.style.height=st.height+"px";
+}
+function clearLive(){
+  if(lctx) lctx.clearRect(0,0,lcv.width,lcv.height);
+  lcv.style.opacity="1";
+  lcv.style.mixBlendMode="normal";
+  drawnIdx=0;
+}
+function liveW(p){
+  if(stroke.t==="pen" && p[2]!==undefined)
+    return Math.max(1.2, stroke.w*(0.35+1.3*p[2])*view.scale*dpr);
+  return Math.max(1.2, stroke.w*view.scale*dpr);
+}
+function drawLive(){
+  rafPending=false;
+  if(!stroke||!lctx) return;
+  const pts=stroke.pts;
+  lctx.strokeStyle=stroke.c; lctx.fillStyle=stroke.c;
+  lctx.lineCap="round"; lctx.lineJoin="round";
+  const sx=p=>(p[0]*view.scale+view.tx)*dpr;
+  const sy=p=>(p[1]*view.scale+view.ty)*dpr;
+  if(drawnIdx===0 && pts.length){
+    lctx.beginPath();
+    lctx.arc(sx(pts[0]),sy(pts[0]),liveW(pts[0])/2,0,Math.PI*2);
+    lctx.fill();
+    drawnIdx=1;
+  }
+  for(let i=drawnIdx;i<pts.length;i++){
+    lctx.lineWidth=(liveW(pts[i-1])+liveW(pts[i]))/2;
+    lctx.beginPath();
+    lctx.moveTo(sx(pts[i-1]),sy(pts[i-1]));
+    lctx.lineTo(sx(pts[i]),sy(pts[i]));
+    lctx.stroke();
+  }
+  drawnIdx=pts.length;
+}
+function scheduleLiveDraw(){
+  if(rafPending) return;
+  rafPending=true;
+  requestAnimationFrame(drawLive);
+}
 
 function startPanFrom(x,y){ gesture={mode:"pan", x, y, tx:view.tx, ty:view.ty, started:false}; }
 function startPinch(){
@@ -528,6 +581,9 @@ function addPoint(ev, isPen){
 }
 function initStage(){
   const st=$("stage");
+  lcv=$("liveCanvas");
+  lctx=lcv.getContext("2d");
+  resizeLiveCanvas();
   st.addEventListener("pointerdown",e=>{
     try{ st.setPointerCapture(e.pointerId); }catch(_){}
     const isPen=e.pointerType==="pen";
@@ -550,7 +606,7 @@ function initStage(){
     if(!isPen && e.pointerType!=="mouse"){
       touchPts.set(e.pointerId,{x:e.clientX,y:e.clientY});
       if(touchPts.size===2){
-        if(stroke){ liveEl.remove(); stroke=null; liveEl=null; drawPid=null; }
+        if(stroke){ clearLive(); stroke=null; drawPid=null; }
         if(erasePid!==null){ erasePid=null; erased=[]; }
         startPinch();
         return;
@@ -572,21 +628,12 @@ function initStage(){
       stroke.pts[0].push(Math.round(e.pressure*100)/100);
     }
     drawPid=e.pointerId;
-    liveRibbon = isPen && def.t==="pen";
-    liveEl=document.createElementNS("http://www.w3.org/2000/svg","path");
-    if(liveRibbon){
-      liveEl.setAttribute("fill",stroke.c);
-      liveEl.setAttribute("stroke","none");
-    }else{
-      liveEl.setAttribute("fill","none");
-      liveEl.setAttribute("stroke",stroke.c);
-      liveEl.setAttribute("stroke-width",stroke.w);
-      liveEl.setAttribute("stroke-linecap","round");
-      liveEl.setAttribute("stroke-linejoin","round");
-      if(stroke.t==="marker"){ liveEl.setAttribute("opacity","0.42"); liveEl.style.mixBlendMode="multiply"; }
+    clearLive();
+    if(stroke.t==="marker"){
+      lcv.style.opacity="0.42";
+      lcv.style.mixBlendMode="multiply";
     }
-    liveEl.setAttribute("d",strokePath(stroke));
-    $("paperSvg").querySelector("#liveLayer").appendChild(liveEl);
+    scheduleLiveDraw();
   });
   st.addEventListener("pointermove",e=>{
     if(stroke && e.pointerId===drawPid){
@@ -594,7 +641,7 @@ function initStage(){
       if(!evs.length) evs=[e];
       const isPen = e.pointerType==="pen" && stroke.t==="pen";
       for(const ev of evs) addPoint(ev,isPen);
-      liveEl.setAttribute("d", liveRibbon ? ribbonPath(stroke) : strokePath(stroke));
+      scheduleLiveDraw();
       return;
     }
     if(e.pointerId===erasePid){ eraseAt(e.clientX,e.clientY); return; }
@@ -624,12 +671,12 @@ function initStage(){
     if(e.pointerId===drawPid && stroke){
       delete stroke._lp;
       cur.ink.push(stroke);
-      liveEl.remove();
       $("paperSvg").querySelector("#inkLayer").appendChild(strokeEl(stroke));
       undoStack.push({type:"add", stroke});
       if(undoStack.length>80) undoStack.shift();
       scheduleSave();
-      stroke=null; liveEl=null; drawPid=null;
+      stroke=null; drawPid=null;
+      clearLive();
     }
     if(e.pointerId===erasePid){
       erasePid=null;
@@ -751,6 +798,7 @@ function openSong(id){
   renderToolbar();
   renderPaper();
   fitPaper();
+  resizeLiveCanvas();
   loadTakes();
   const h=$("zoomHint");
   h.textContent=fingerDraws?"1本指で書く / 2本指で移動・ピンチ":"ペンで書く / 指で移動・ピンチ";
@@ -1091,7 +1139,7 @@ $("miDeleteSong").onclick=async()=>{
 document.querySelectorAll(".modal").forEach(m=>{
   m.addEventListener("click",e=>{ if(e.target===m) m.classList.add("hidden"); });
 });
-window.addEventListener("resize",()=>{ if(cur){ clampView(); applyView(); } });
+window.addEventListener("resize",()=>{ if(cur){ clampView(); applyView(); resizeLiveCanvas(); } });
 
 /* ================= 起動 ================= */
 (async function(){
